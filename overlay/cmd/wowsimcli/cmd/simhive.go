@@ -129,8 +129,11 @@ func init() {
 	}
 	request.Flags().IntVar(&iterations, "iterations", 0, "iterations, over what the settings hold")
 	request.Flags().StringVar(&siml, "siml", "", "read an x.siml setup from this path instead of stdin")
-	simhive.AddCommand(run, split, combine, request)
-	simhive.SilenceUsage = true
+	// One line on stderr for a failure, the one root's Execute prints: no usage text, no cobra "Error:" copy.
+	for _, c := range []*cobra.Command{run, split, combine, request} {
+		c.SilenceUsage, c.SilenceErrors = true, true
+		simhive.AddCommand(c)
+	}
 	rootCmd.AddCommand(simhive)
 }
 
