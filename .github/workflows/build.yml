@@ -1,0 +1,119 @@
+name: build
+
+# The Forever engine's channel: wowsimcli from github.com/wowsims/forever with this repository's overlay (the pool's
+# commands), for every platform the pool runs on, as a release the hub pins and the machines fetch and verify, the way
+# simc reaches them from rbardtke/simc-builds. Go cross-compiles, so one runner builds all four.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: wowsims/forever commit sha (or branch) to build
+        required: false
+        default: master
+      test:
+        description: build only — the zips stay run artifacts, no release (the channel is untouched)
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: "45 6 * * *"
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+env:
+  FOREVER_BRANCH: master
+  GO_VERSION: "1.27.3"
+  PROTOC_VERSION: "36.2"
+  PROTOC_GEN_GO_VERSION: v1.36.10
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: overlay-repo
+      - name: resolve
+        id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          [ -n "$REF" ] || REF="$FOREVER_BRANCH"
+          SHA=$(git ls-remote https://github.com/wowsims/forever.git "refs/heads/$REF" | cut -f1)
+          [ -n "$SHA" ] || SHA=$(gh api "repos/wowsims/forever/commits/$REF" --jq .sha 2>/dev/null || true)
+          [ -n "$SHA" ] || SHA="$REF"
+          OVERLAY=$(git -C overlay-repo rev-parse HEAD)
+          # A build is the engine's commit and the overlay's: either moving makes a new one.
+          TAG="forever-${SHA:0:12}-${OVERLAY:0:7}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.inputs.test }}" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"; echo "release $TAG exists, nothing to do"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v5
+        if: steps.r.outputs.exists == 'false'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: tools
+        if: steps.r.outputs.exists == 'false'
+        run: |
+          curl -sSL -o protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-linux-x86_64.zip"
+          unzip -q protoc.zip -d "$HOME/protoc"
+          echo "$HOME/protoc/bin" >> "$GITHUB_PATH"
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@$PROTOC_GEN_GO_VERSION"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: build
+        if: steps.r.outputs.exists == 'false'
+        run: |
+          git clone -q https://github.com/wowsims/forever.git forever
+          git -C forever checkout -q "${{ steps.r.outputs.sha }}"
+          bash overlay-repo/scripts/build.sh forever bin linux/amd64 linux/arm64 windows/amd64 darwin/arm64
+          TAG="${{ steps.r.outputs.tag }}"
+          mkdir -p assets
+          for p in linux-x64:linux-amd64 linux-arm64:linux-arm64 windows-x64:windows-amd64.exe macos-arm64:darwin-arm64; do
+            platform=${p%%:*} built=bin/wowsimcli-${p#*:}
+            dir="pkg/$TAG-$platform"
+            mkdir -p "$dir"
+            ext=; [ "$platform" = windows-x64 ] && ext=.exe
+            cp "$built" "$dir/wowsimcli$ext"
+            cp forever/LICENSE "$dir/LICENSE-wowsims.txt"
+            printf 'WoWSims Forever (https://github.com/wowsims/forever) %s, with the Simhive overlay %s\n' \
+              "${{ steps.r.outputs.sha }}" "$(git -C overlay-repo rev-parse HEAD)" > "$dir/VERSION.txt"
+            (cd pkg && zip -qr "../assets/$TAG-$platform.zip" "$TAG-$platform")
+          done
+          git -C forever archive --format=tar.gz --prefix="forever-${{ steps.r.outputs.sha }}/" -o "assets/$TAG-source.tar.gz" HEAD
+          cd assets && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: smoke test
+        if: steps.r.outputs.exists == 'false'
+        run: |
+          cd forever
+          spec=$(ls ui/specs/*/*/builds/*.siml | head -1)
+          ../bin/wowsimcli-linux-amd64 simhive request --siml "$spec" --iterations 2000 > /tmp/req.json
+          ../bin/wowsimcli-linux-amd64 simhive sim --threads 2 < /tmp/req.json > /tmp/res.json
+          python3 -c 'import json; r=json.load(open("/tmp/res.json")); p=r["raidMetrics"]["parties"][0]["players"][0]; assert r["iterationsDone"]==2000 and p["dps"]["avg"]>0, r.get("error"); print("dps", p["dps"]["avg"])'
+      - uses: actions/upload-artifact@v4
+        if: steps.r.outputs.exists == 'false' && github.event.inputs.test == 'true'
+        with:
+          name: forever
+          path: assets/*
+          retention-days: 3
+      - name: release
+        if: steps.r.outputs.exists == 'false' && github.event.inputs.test != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.r.outputs.tag }}"
+          SHA="${{ steps.r.outputs.sha }}"
+          gh release create "$TAG" assets/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Forever engine ${SHA:0:12}" \
+            --notes "wowsimcli built from https://github.com/wowsims/forever/commit/$SHA (MIT, by the WoWSims contributors — https://github.com/wowsims/forever) with the Simhive pool commands of $GITHUB_REPOSITORY@$GITHUB_SHA. Source of the engine: $TAG-source.tar.gz. Not an official WoWSims release."
