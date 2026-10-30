@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/spf13/cobra"
+	"github.com/wowsims/forever/assets/database"
 	"github.com/wowsims/forever/sim/core"
 	"github.com/wowsims/forever/sim/core/proto"
 	"github.com/wowsims/forever/sim/core/simsignals"
@@ -127,10 +129,17 @@ func init() {
 			return poolWriteJSON(req)
 		},
 	}
+	names := &cobra.Command{
+		Use:   "names",
+		Short: "the names and icons of the spells and items in the engine's database, as JSON",
+		RunE: func(*cobra.Command, []string) error {
+			return json.NewEncoder(os.Stdout).Encode(poolNames())
+		},
+	}
 	request.Flags().IntVar(&iterations, "iterations", 0, "iterations, over what the settings hold")
 	request.Flags().StringVar(&siml, "siml", "", "read an x.siml setup from this path instead of stdin")
 	// One line on stderr for a failure, the one root's Execute prints: no usage text, no cobra "Error:" copy.
-	for _, c := range []*cobra.Command{run, split, combine, request} {
+	for _, c := range []*cobra.Command{run, split, combine, request, names} {
 		c.SilenceUsage, c.SilenceErrors = true, true
 		simhive.AddCommand(c)
 	}
@@ -218,6 +227,29 @@ func poolSim(request *proto.RaidSimRequest, threads int32) *proto.RaidSimResult 
 		}
 	}
 	return core.CombineConcurrentSimResults(results, false)
+}
+
+// What a result's ids are called: a result names its actions and auras by id only, and the site looks them up in
+// this same database. Spells carry their rank (one id per rank in Forever).
+type poolName struct {
+	Name string `json:"name"`
+	Icon string `json:"icon,omitempty"`
+	Rank int32  `json:"rank,omitempty"`
+}
+
+func poolNames() map[string]map[int32]poolName {
+	db := database.Load()
+	spells, items := map[int32]poolName{}, map[int32]poolName{}
+	for _, s := range db.SpellIcons {
+		spells[s.Id] = poolName{s.Name, s.Icon, s.Rank}
+	}
+	for _, i := range db.ItemIcons {
+		items[i.Id] = poolName{Name: i.Name, Icon: i.Icon}
+	}
+	for _, i := range db.Items {
+		items[i.Id] = poolName{Name: i.Name, Icon: i.Icon}
+	}
+	return map[string]map[int32]poolName{"spells": spells, "items": items}
 }
 
 // Settings from stdin: a wowsims link (…/forever/<spec>/#<base64 zlib proto>) or IndividualSimSettings as protojson.
