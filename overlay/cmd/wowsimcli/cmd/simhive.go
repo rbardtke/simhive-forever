@@ -136,10 +136,29 @@ func init() {
 			return json.NewEncoder(os.Stdout).Encode(poolNames())
 		},
 	}
+	timeline := &cobra.Command{
+		Use:   "timeline",
+		Short: "one iteration of a RaidSimRequest as the first player's casts, with its resources and buffs at each",
+		RunE: func(*cobra.Command, []string) error {
+			request := &proto.RaidSimRequest{}
+			if err := poolReadJSON(request); err != nil {
+				return err
+			}
+			request.SimOptions.Iterations = 1
+			if err := poolCheck(request); err != nil {
+				return err
+			}
+			out, err := poolTimeline(request)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(out)
+		},
+	}
 	request.Flags().IntVar(&iterations, "iterations", 0, "iterations, over what the settings hold")
 	request.Flags().StringVar(&siml, "siml", "", "read an x.siml setup from this path instead of stdin")
 	// One line on stderr for a failure, the one root's Execute prints: no usage text, no cobra "Error:" copy.
-	for _, c := range []*cobra.Command{run, split, combine, request, names} {
+	for _, c := range []*cobra.Command{run, split, combine, request, names, timeline} {
 		c.SilenceUsage, c.SilenceErrors = true, true
 		simhive.AddCommand(c)
 	}
@@ -227,6 +246,81 @@ func poolSim(request *proto.RaidSimRequest, threads int32) *proto.RaidSimResult 
 		}
 	}
 	return core.CombineConcurrentSimResults(results, false)
+}
+
+// One cast of the timeline: when, what, whether the rotation pressed it (a proc, a swing or a spell another spell
+// casts is not a press), the resources as the cast began, before its cost, and the buffs up then, as [id, stacks].
+type poolCast struct {
+	T     float64            `json:"t"`
+	Spell int32              `json:"spell,omitempty"`
+	Item  int32              `json:"item,omitempty"`
+	Other string             `json:"other,omitempty"`
+	Tag   int32              `json:"tag,omitempty"`
+	Press bool               `json:"press"`
+	Res   map[string]float64 `json:"res"`
+	Buffs [][2]int32         `json:"buffs"`
+}
+
+type poolTimelineOut struct {
+	Duration float64    `json:"duration"`
+	Casts    []poolCast `json:"casts"`
+}
+
+// The sim's casts in one iteration — the sim's side of the analyzer's checklist, as the combat log is the
+// player's. The engine writes a line per cast to its debug log as the cast begins; the log is pointed at a
+// function here (from the first rotation action on, so the prepull is not in it) that reads the player's state
+// at that moment instead of formatting text. The " APL: <entry>" the engine adds to a cast the rotation chose
+// is what tells a press from a proc.
+func poolTimeline(request *proto.RaidSimRequest) (*poolTimelineOut, error) {
+	out := &poolTimelineOut{Casts: []poolCast{}}
+	var player *core.Character
+	hook := func(sim *core.Simulation, _ *core.APLAction) {
+		if sim.Log != nil {
+			return
+		}
+		player = sim.Raid.Parties[0].Players[0].GetCharacter()
+		prefix := player.LogLabel() + " Casting %s ("
+		sim.Log = func(message string, vals ...interface{}) {
+			if !strings.HasPrefix(message, prefix) || len(vals) == 0 {
+				return
+			}
+			id, ok := vals[0].(core.ActionID)
+			if !ok {
+				return
+			}
+			suffix, _ := vals[len(vals)-1].(string)
+			c := poolCast{T: sim.CurrentTime.Seconds(), Spell: id.SpellID, Item: id.ItemID, Tag: id.Tag, Press: strings.HasPrefix(suffix, " APL:"), Res: map[string]float64{}, Buffs: [][2]int32{}}
+			if id.OtherID != proto.OtherAction_OtherActionNone {
+				c.Other = id.OtherID.String()
+			}
+			if player.HasManaBar() {
+				c.Res["mana"] = player.CurrentMana()
+			}
+			if player.HasEnergyBar() {
+				c.Res["energy"] = player.CurrentEnergy()
+				c.Res["combo_points"] = float64(player.ComboPoints())
+			}
+			if player.HasRageBar() {
+				c.Res["rage"] = player.CurrentRage()
+			}
+			for _, a := range player.GetAuras() {
+				if a.IsActive() && (a.ActionID.SpellID != 0 || a.ActionID.ItemID != 0) {
+					aid := a.ActionID.SpellID
+					if aid == 0 {
+						aid = -a.ActionID.ItemID // an item's aura: its item id, negative
+					}
+					c.Buffs = append(c.Buffs, [2]int32{aid, max(1, a.GetStacks())})
+				}
+			}
+			out.Casts = append(out.Casts, c)
+		}
+	}
+	result := core.RunSimWithAPLHook(request, simsignals.CreateSignals(), hook)
+	if msg := result.GetError().GetMessage(); msg != "" {
+		return nil, errors.New(msg)
+	}
+	out.Duration = result.FirstIterationDuration
+	return out, nil
 }
 
 // What a result's ids are called: a result names its actions and auras by id only, and the site looks them up in

@@ -17,6 +17,7 @@ protojson on stdin and writes protojson on stdout:
 | `split --count n` | `RaidSimRequest` | `RaidSimRequestSplitResult`: n slices, each with its own seed | the hub |
 | `sim --threads n` | `RaidSimRequest` | `RaidSimResult`; `progress <done> <total>` lines on stderr | a machine |
 | `combine` | `RaidSimResultCombinationRequest` | `RaidSimResult` | the hub |
+| `timeline` | `RaidSimRequest` | one iteration as the first player's casts: time, spell, whether the rotation pressed it, the resources before its cost and the buffs up | the hub (the analyzer) |
 | `names` | nothing | the names, icons and ranks of the spells and items in the engine's database, as JSON | the hub |
 
 The split and combine are the engine's own (`SplitSimRequestForConcurrency`,
