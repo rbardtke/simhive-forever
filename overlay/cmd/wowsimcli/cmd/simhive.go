@@ -131,7 +131,7 @@ func init() {
 	}
 	names := &cobra.Command{
 		Use:   "names",
-		Short: "the names and icons of the spells and items in the engine's database, as JSON",
+		Short: "the names and icons of the spells and items in the engine's database, and the gear, random suffixes and enchants it knows, as JSON",
 		RunE: func(*cobra.Command, []string) error {
 			return json.NewEncoder(os.Stdout).Encode(poolNames())
 		},
@@ -331,9 +331,14 @@ type poolName struct {
 	Rank int32  `json:"rank,omitempty"`
 }
 
+//
+// The hub also checks a character's gear against it before a sim goes out: gear is the items a character can wear
+// (items also has rows that are only an icon), suffixes the random suffixes and enchants the enchants by effect id.
+// The sim panics on an item or a suffix the database lacks and leaves out an enchant it lacks.
 func poolNames() map[string]map[int32]poolName {
 	db := database.Load()
-	spells, items := map[int32]poolName{}, map[int32]poolName{}
+	spells, items, gear := map[int32]poolName{}, map[int32]poolName{}, map[int32]poolName{}
+	suffixes, enchants := map[int32]poolName{}, map[int32]poolName{}
 	for _, s := range db.SpellIcons {
 		spells[s.Id] = poolName{s.Name, s.Icon, s.Rank}
 	}
@@ -342,8 +347,15 @@ func poolNames() map[string]map[int32]poolName {
 	}
 	for _, i := range db.Items {
 		items[i.Id] = poolName{Name: i.Name, Icon: i.Icon}
+		gear[i.Id] = poolName{Name: i.Name}
 	}
-	return map[string]map[int32]poolName{"spells": spells, "items": items}
+	for _, s := range db.RandomSuffixes {
+		suffixes[s.Id] = poolName{Name: s.Name}
+	}
+	for _, e := range db.Enchants {
+		enchants[e.EffectId] = poolName{Name: e.Name}
+	}
+	return map[string]map[int32]poolName{"spells": spells, "items": items, "gear": gear, "suffixes": suffixes, "enchants": enchants}
 }
 
 // Settings from stdin: a wowsims link (…/forever/<spec>/#<base64 zlib proto>) or IndividualSimSettings as protojson.

@@ -100,6 +100,8 @@ jobs:
           ../bin/wowsimcli-linux-amd64 simhive request --siml "$spec" --iterations 2000 > /tmp/req.json
           ../bin/wowsimcli-linux-amd64 simhive sim --threads 2 < /tmp/req.json > /tmp/res.json
           python3 -c 'import json; r=json.load(open("/tmp/res.json")); p=r["raidMetrics"]["parties"][0]["players"][0]; assert r["iterationsDone"]==2000 and p["dps"]["avg"]>0, r.get("error"); print("dps", p["dps"]["avg"])'
+          ../bin/wowsimcli-linux-amd64 simhive names > /tmp/names.json
+          python3 -c 'import json; n=json.load(open("/tmp/names.json")); c={k: len(n.get(k) or {}) for k in ("spells", "items", "gear", "suffixes", "enchants")}; assert all(c.values()), c; print("names", c)'
       - uses: actions/upload-artifact@v4
         if: steps.r.outputs.exists == 'false' && github.event.inputs.test == 'true'
         with:
