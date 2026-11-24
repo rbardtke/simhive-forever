@@ -298,7 +298,8 @@ func poolTimeline(request *proto.RaidSimRequest) (*poolTimelineOut, error) {
 			}
 			if player.HasEnergyBar() {
 				c.Res["energy"] = player.CurrentEnergy()
-				c.Res["combo_points"] = float64(player.ComboPoints())
+				// combo points live on one target (upstream e2b55ab era): the ones on the current target, as the APL reads them
+				c.Res["combo_points"] = float64(player.ComboPoints(player.CurrentTarget))
 			}
 			if player.HasRageBar() {
 				c.Res["rage"] = player.CurrentRage()
